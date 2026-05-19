@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SecurePDF Pro - 隱私 PDF 工具箱</title>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 FontAwesome 圖示庫 (替換了原本出錯的 Lucide 庫，確保穩定顯示) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    
+    <!-- 引入 React 與 ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- 引入 Babel 讓我們可以在瀏覽器內直接解析 JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans text-gray-900">
+    
+    <!-- React 應用程式的掛載點 -->
+    <div id="root"></div>
+
+    <!-- 所有的程式碼邏輯都在這裡 -->
+    <script type="text/babel">
+        const { useState, useRef, useEffect } = React;
+
+        const App = () => {
+            const [activeTool, setActiveTool] = useState('home');
+            const [files, setFiles] = useState([]);
+            const [processing, setProcessing] = useState(false);
+            const [message, setMessage] = useState(null);
+            const [libsLoaded, setLibsLoaded] = useState(false);
+            const [ocrProgress, setOcrProgress] = useState(0); 
+            
+            // 狀態
+            const [confirmPassword, setConfirmPassword] = useState('');
+            const [officeMode, setOfficeMode] = useState('layout'); 
+            const [isHighQuality, setIsHighQuality] = useState(true); 
+            
+            // 浮水印相關狀態
+            const [watermarkType, setWatermarkType] = useState('text');
+            const [watermarkImage, setWatermarkImage] = useState(null);
+            const [watermarkText, setWatermarkText] = useState('機密 CONFIDENTIAL');
+            const [watermarkScale, setWatermarkScale] = useState(0.5);
+            const [watermarkOpacity, setWatermarkOpacity] = useState(0.3);
+
+            // 簽名預覽
+            const [signaturePreview, setSignaturePreview] = useState(null);
+            const [signScale, setSignScale] = useState(0.2);
+            const previewCanvasRef = useRef(null);
+            const [pdfPageSize, setPdfPageSize] = useState({ width: 0, height: 0 });
+            const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+            const [dragPos, setDragPos] = useState({ x: 50, y: 50 });
+            const [isDragging, setIsDragging] = useState(false);
+            const [previewPageNum, setPreviewPageNum] = useState(1);
+            const [totalPreviewPages, setTotalPreviewPages] = useState(1);
+            // 拆分範圍
+            const [splitRange, setSplitRange] = useState('');
+            
+            // 檔案替換確認狀態
+            const [pendingUpload, setPendingUpload] = useState(null);
+            
+            // 拆分預覽相關狀態
+            const [pagePreviews, setPagePreviews] = useState([]);
+            const [selectedPages, setSelectedPages] = useState(new Set());
+            const [generatingPreviews, setGeneratingPreviews] = useState(false);
+
+            // 調整順序相關狀態
+            const [reorderList, setReorderList] = useState([]);
+            const [draggedIndex, setDraggedIndex] = useState(null);
+
+            // 壓縮 PDF 相關狀態
+            const [compressQuality, setCompressQuality] = useState(0.6);
+
+            // 載入函式庫
+            useEffect(() => {
+                const loadScript = (src) => {
+                return new Promise((resolve, reject) => {
+                    if (document.querySelector(`script[src="${src}"]`)) {
+                    resolve();
+                    return;
+                    }
+                    const script = document.createElement('script');
+                    script.src = src;
+                    script.onload = resolve;
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+                };
+
+                const initLibs = async () => {
+                try {
+                    await Promise.all([
+                    loadScript('https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js'),
+                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'),
+                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js'),
+                    loadScript('https://unpkg.com/docx@7.8.2/build/index.js'), 
+                    loadScript('https://cdn.jsdelivr.net/gh/gitbrent/pptxgenjs@3.12.0/dist/pptxgen.bundle.js'), 
+                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js'), 
+                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'), 
+                    loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'), 
+                    loadScript('https://unpkg.com/tesseract.js@5.0.3/dist/tesseract.min.js') 
+                    ]);
+                    
+                    if (window.pdfjsLib) {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                    }
+                    setLibsLoaded(true);
+                } catch (err) {
+                    console.error("Libraries load failed", err);
+                    setMessage({ text: '核心元件載入失敗，請檢查網路連線', type: 'error' });
+                }
+                };
+                initLibs();
+            }, []);
+
+            // 監聽切換工具與檔案以生成預覽
+            useEffect(() => {
+                if ((activeTool === 'split' || activeTool === 'reorder') && files.length > 0 && pagePreviews.length === 0) {
+                    generatePreviews(files[0]);
+                }
+                if (activeTool === 'sign' && files.length > 0) {
+                    setTimeout(() => {
+                        if (previewCanvasRef.current) {
+                            renderPdfPreview(files[0], previewPageNum);
+                        }
+                    }, 150);
+                }
+            }, [files, activeTool, pagePreviews.length, previewPageNum]);
+
+            const generatePreviews = async (file) => {
+                setGeneratingPreviews(true);
+                setPagePreviews([]);
+                setReorderList([]);
+                try {
+                    const fileData = await readFileAsArrayBuffer(file);
+                    const pdf = await window.pdfjsLib.getDocument(fileData).promise;
+                    const previews = [];
+                    const rList = [];
+                    for (let i = 1; i <= pdf.numPages; i++) {
+                        const page = await pdf.getPage(i);
+                        const viewport = page.getViewport({ scale: 0.3 }); 
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        await page.render({ canvasContext: ctx, viewport }).promise;
+                        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+                        previews.push(dataUrl);
+                        rList.push({ id: i, image: dataUrl });
+                    }
+                    setPagePreviews(previews);
+                    setReorderList(rList);
+                } catch (error) {
+                    console.error('預覽生成失敗', error);
+                }
+                setGeneratingPreviews(false);
+            };
+
+            const togglePageSelection = (pageNum) => {
+                const newSelection = new Set(selectedPages);
+                if (newSelection.has(pageNum)) {
+                    newSelection.delete(pageNum);
+                } else {
+                    newSelection.add(pageNum);
+                }
+                setSelectedPages(newSelection);
+                const sortedArray = Array.from(newSelection).sort((a, b) => a - b);
+                setSplitRange(sortedArray.join(','));
+            };
+
+            const handleSplitRangeChange = (e) => {
+                const val = e.target.value;
+                setSplitRange(val);
+                const newSet = new Set();
+                const parts = val.split(',');
+                parts.forEach(part => {
+                    const trimmed = part.trim();
+                    if (trimmed.includes('-')) {
+                        const [start, end] = trimmed.split('-').map(Number);
+                        if (!isNaN(start) && !isNaN(end)) {
+                            for (let i = start; i <= end; i++) newSet.add(i);
+                        }
+                    } else {
+                        const num = Number(trimmed);
+                        if (!isNaN(num) && num > 0) newSet.add(num);
+                    }
+                });
+                setSelectedPages(newSet);
+            };
+
+            // --- 工具函數 ---
+            const readFileAsArrayBuffer = (file) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsArrayBuffer(file);
+            });
+
+            const readFileAsDataURL = (file) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+
+            const showMessage = (msg, type = 'info') => {
+                setMessage({ text: msg, type });
+                setTimeout(() => setMessage(null), 5000);
+            };
+
+            const resetWorkspace = () => {
+                setFiles([]);
+                setMessage(null);
+                setConfirmPassword('');
+                setSignaturePreview(null);
+                setWatermarkImage(null);
+                setWatermarkScale(0.5);
+                setWatermarkOpacity(0.3);
+                setOcrProgress(0);
+                setSplitRange('');
+                setPagePreviews([]);
+                setSelectedPages(new Set());
+                setReorderList([]);
+                setDraggedIndex(null);
+                setCompressQuality(0.6);
+            };
+
+            const downloadBlob = (content, filename, mimeType = 'application/pdf') => {
+                let blob;
+                if (content instanceof Blob) {
+                    blob = content; 
+                } else {
+                    blob = new Blob([content], { type: mimeType });
+                }
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                link.click();
+            };
+
+            const handleFileUpload = (e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                const newFiles = Array.from(e.target.files);
+                if (activeTool === 'merge') {
+                    setFiles(prev => [...prev, ...newFiles]);
+                } else {
+                    if (files.length > 0) {
+                    setPendingUpload(newFiles);
+                    } else {
+                    setFiles(newFiles);
+                    if (activeTool === 'sign' && newFiles.length > 0) {
+                        setTimeout(() => renderPdfPreview(newFiles[0], 1), 100);
+                    }
+                    }
+                }
+                e.target.value = ''; 
+                }
+            };
+
+            const confirmNewUpload = () => {
+                if (pendingUpload) {
+                    setOcrProgress(0);
+                    setSplitRange('');
+                    setPagePreviews([]);
+                    setSelectedPages(new Set());
+                    setReorderList([]);
+                    setDraggedIndex(null);
+                    setCompressQuality(0.6);
+                    
+                    setFiles(pendingUpload);
+                    if (activeTool === 'sign' && pendingUpload.length > 0) {
+                        setTimeout(() => renderPdfPreview(pendingUpload[0], 1), 100);
+                    }
+                    setPendingUpload(null);
+                }
+            };
+
+            const cancelNewUpload = () => {
+                setPendingUpload(null);
+            };
+
+            // --- 功能：PDF 轉圖片 ---
+            const convertToImage = async (format = 'png') => {
+                if (files.length === 0) return;
+                setProcessing(true);
+                try {
+                const fileData = await readFileAsArrayBuffer(files[0]);
+                const pdf = await window.pdfjsLib.getDocument(fileData).promise;
+                const pageCount = pdf.numPages;
+                const mimeType = format === 'jpg' ? 'image/jpeg' : 'image/png';
+
+                if (pageCount === 1) {
+                    const page = await pdf.getPage(1);
+                    const viewport = page.getViewport({ scale: 2.0 });
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    
+                    await page.render({ canvasContext: context, viewport: viewport }).promise;
+                    
+                    canvas.toBlob((blob) => {
+                        downloadBlob(blob, `${files[0].name.replace('.pdf', '')}.${format}`);
+                        showMessage('圖片下載成功', 'success');
+                        setProcessing(false);
+                    }, mimeType);
+
+                } else {
+                    const JSZip = window.JSZip;
+                    const zip = new JSZip();
+                    const imgFolder = zip.folder("images");
+
+                    for (let i = 1; i <= pageCount; i++) {
+                        const page = await pdf.getPage(i);
+                        const viewport = page.getViewport({ scale: 2.0 });
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        
+                        await page.render({ canvasContext: context, viewport: viewport }).promise;
+                        
+                        const blob = await new Promise(resolve => canvas.toBlob(resolve, mimeType));
+                        imgFolder.file(`page_${i}.${format}`, blob);
+                    }
+                    
+                    const content = await zip.generateAsync({ type: "blob" });
+                    downloadBlob(content, `${files[0].name.replace('.pdf', '')}_images.zip`);
+                    showMessage(`已將 ${pageCount} 頁打包為 ZIP 下載`, 'success');
+                    setProcessing(false);
+                }
+                } catch (e) {
+                console.error(e);
+                showMessage('轉換失敗，請確認檔案未加密', 'error');
+                setProcessing(false);
+                }
+            };
+
+            // --- PDF 轉 Office (HTML 佈局版) ---
+            const renderPageWithoutText = async (page, scale = 2.0) => {
+                const viewport = page.getViewport({ scale });
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                const dummy = () => {};
+                const originalFillText = ctx.fillText;
+                const originalStrokeText = ctx.strokeText;
+                ctx.fillText = dummy;
+                ctx.strokeText = dummy;
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                ctx.fillText = originalFillText;
+                ctx.strokeText = originalStrokeText;
+                return { dataUrl: canvas.toDataURL('image/png'), width: viewport.width, height: viewport.height };
+            };
+
+            const groupTextItems = (items, viewport) => {
+                const processedItems = items.map(item => {
+                    return {
+                        str: item.str,
+                        x: item.transform[4],
+                        y: item.transform[5],
+                        fontHeight: Math.hypot(item.transform[0], item.transform[1])
+                    };
+                }).sort((a, b) => b.y - a.y || a.x - b.x);
+
+                if (processedItems.length === 0) return [];
+                const lines = [];
+                let currentLine = { y: processedItems[0].y, items: [] };
+                lines.push(currentLine);
+
+                processedItems.forEach((item, index) => {
+                    if (index === 0) { currentLine.items.push(item); return; }
+                    if (Math.abs(item.y - currentLine.y) < (item.fontHeight || 10) * 0.5) {
+                        currentLine.items.push(item);
+                    } else {
+                        currentLine = { y: item.y, items: [item] };
+                        lines.push(currentLine);
+                    }
+                });
+
+                return lines.map(line => {
+                    line.items.sort((a, b) => a.x - b.x);
+                    const first = line.items[0];
+                    const str = line.items.map(i => i.str).join('');
+                    return {
+                        text: str,
+                        xPercent: (first.x / (viewport.rawDims?.pageWidth || 595)),
+                        yPercent: 1 - (first.y / (viewport.rawDims?.pageHeight || 842)),
+                        hPercent: (first.fontHeight / (viewport.rawDims?.pageHeight || 842)),
+                        fontSize: first.fontHeight
+                    };
+                });
+            };
+
+            const convertToOffice = async () => {
+                if (files.length === 0) return;
+                setProcessing(true);
+                setOcrProgress(0);
+
+                try {
+                const fileData = await readFileAsArrayBuffer(files[0]);
+                const pdf = await window.pdfjsLib.getDocument(fileData).promise;
+                
+                let ocrWorker = null;
+                if (officeMode === 'ocr') {
+                    showMessage('正在初始化 OCR 引擎 (首次載入需下載語言包，請稍候)...', 'info');
+                    ocrWorker = await window.Tesseract.createWorker('chi_tra+eng');
+                }
+
+                let htmlContent = `
+                    <!DOCTYPE html>
+                    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+                    <head>
+                        <meta charset="utf-8">
+                        <title>${files[0].name}</title>
+                        <style>
+                            body { background: #e0e0e0; font-family: "Microsoft JhengHei", sans-serif; margin: 0; padding: 20px; }
+                            .pdf-page { position: relative; margin: 0 auto 20px auto; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.1); overflow: hidden; page-break-after: always; }
+                            .pdf-bg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
+                            .pdf-text { position: absolute; z-index: 1; color: black; white-space: nowrap; transform-origin: left top; }
+                        </style>
+                    </head>
+                    <body>
+                `;
+
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    setOcrProgress(Math.round(((i - 1) / pdf.numPages) * 100));
+                    
+                    const page = await pdf.getPage(i);
+                    const scale = isHighQuality ? 3.0 : 2.0; 
+                    const viewport = page.getViewport({ scale });
+                    viewport.rawDims = { pageWidth: viewport.width / scale, pageHeight: viewport.height / scale }; 
+
+                    if (officeMode === 'layout' && i === 1) {
+                        const tempText = await page.getTextContent();
+                        if (tempText.items.length < 5) {
+                            if (!confirm("偵測到此頁面文字極少，可能是圖片或掃描檔。\n是否要繼續使用一般模式？\n(若需要編輯文字，請取消並選擇 'OCR 辨識模式')")) {
+                                setProcessing(false);
+                                return;
+                            }
+                        }
+                    }
+
+                    htmlContent += `<div class="pdf-page" style="width: ${viewport.width}px; height: ${viewport.height}px;">`;
+
+                    if (officeMode === 'ocr') {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        await page.render({ canvasContext: ctx, viewport }).promise;
+                        
+                        const rawDataUrl = canvas.toDataURL('image/png');
+                        
+                        showMessage(`正在辨識第 ${i} / ${pdf.numPages} 頁...`, 'info');
+                        const { data } = await ocrWorker.recognize(rawDataUrl);
+                        
+                        data.lines.forEach(line => {
+                            const { bbox } = line;
+                            const padding = isHighQuality ? 4 : 2; 
+                            const x = Math.max(0, bbox.x0 - padding);
+                            const y = Math.max(0, bbox.y0 - padding);
+                            const w = (bbox.x1 - bbox.x0) + padding * 2;
+                            const h = (bbox.y1 - bbox.y0) + padding * 2;
+
+                            ctx.save();
+                            ctx.beginPath();
+                            ctx.rect(x, y, w, h);
+                            ctx.clip(); 
+                            ctx.filter = 'blur(8px)'; 
+                            ctx.drawImage(canvas, 0, 0); 
+                            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+                            ctx.fillRect(x, y, w, h);
+                            ctx.restore();
+                        });
+
+                        const cleanedDataUrl = canvas.toDataURL('image/png');
+                        htmlContent += `<img class="pdf-bg" src="${cleanedDataUrl}" />`;
+                            
+                        data.lines.forEach(line => {
+                            const { bbox, text } = line;
+                            const xPct = bbox.x0 / canvas.width;
+                            const yPct = bbox.y0 / canvas.height;
+                            const fontSizePx = Math.max(10, (bbox.y1 - bbox.y0)); 
+                            
+                            htmlContent += `<span class="pdf-text" style="left: ${xPct * 100}%; top: ${yPct * 100}%; font-size: ${fontSizePx}px;">${text}</span>`;
+                        });
+
+                    } else if (officeMode === 'layout') {
+                        const bgImage = await renderPageWithoutText(page, scale);
+                        htmlContent += `<img class="pdf-bg" src="${bgImage.dataUrl}" />`;
+                        
+                        const textContent = await page.getTextContent();
+                        const textLines = groupTextItems(textContent.items, viewport);
+                        
+                        textLines.forEach(line => {
+                            const fontSizePx = line.fontSize * scale;
+                            htmlContent += `<span class="pdf-text" style="left: ${line.xPercent * 100}%; top: ${(line.yPercent - 0.02) * 100}%; font-size: ${fontSizePx}px;">${line.text}</span>`;
+                        });
+
+                    } else if (officeMode === 'image') {
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        await page.render({ canvasContext: ctx, viewport }).promise;
+                        const dataUrl = canvas.toDataURL('image/png');
+                        
+                        htmlContent += `<img class="pdf-bg" src="${dataUrl}" />`;
+
+                    } else { 
+                        const textContent = await page.getTextContent();
+                        const text = textContent.items.map(item => item.str).join(' ');
+                        htmlContent += `<div style="padding: 40px; font-size: 24px; position: relative; z-index: 1;">${text}</div>`;
+                    }
+
+                    htmlContent += `</div>`; 
+                }
+
+                htmlContent += `</body></html>`;
+
+                if (ocrWorker) {
+                    await ocrWorker.terminate();
+                }
+                setOcrProgress(100);
+
+                const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+                downloadBlob(blob, files[0].name.replace('.pdf', `_${officeMode}.html`), 'text/html');
+                
+                showMessage(`已匯出 HTML (${officeMode === 'ocr' ? 'OCR 辨識' : officeMode === 'layout' ? '可編輯排版' : officeMode === 'image' ? '圖片' : '文字'}模式)，請以 Word/Excel/PPT 開啟`, 'success');
+                } catch (e) {
+                console.error(e);
+                showMessage('轉換失敗: ' + e.message, 'error');
+                }
+                setProcessing(false);
+                setOcrProgress(0);
+            };
+
+            // --- Office 轉 PDF ---
+            const convertOfficeToPdf = async () => {
+                if (files.length === 0) return;
+                setProcessing(true);
+                try {
+                    const file = files[0];
+                    const ext = file.name.split('.').pop().toLowerCase();
+                    const fileData = await readFileAsArrayBuffer(file);
+                    
+                    let container = document.createElement('div');
+                    container.style.cssText = `font-family: "Microsoft JhengHei", sans-serif; font-size: 12pt; line-height: 1.5; padding: 20px; color: #000; background: white;`;
+
+                    if (ext === 'docx') {
+                        const result = await window.mammoth.convertToHtml({ arrayBuffer: fileData });
+                        if (!result.value) throw new Error("無法讀取 Word 內容");
+                        container.innerHTML = result.value;
+                    } else if (ext === 'xlsx' || ext === 'xls') {
+                        const workbook = window.XLSX.read(fileData, { type: 'array' });
+                        const sheetName = workbook.SheetNames[0]; 
+                        const worksheet = workbook.Sheets[sheetName];
+                        const html = window.XLSX.utils.sheet_to_html(worksheet);
+                        if (!html) throw new Error("無法讀取 Excel 內容");
+                        container.innerHTML = `
+                            <h2 style="text-align:center; border-bottom: 2px solid #333; padding-bottom: 10px;">${file.name}</h2>
+                            <div style="overflow-x:auto;">${html}</div>
+                            <style>table{border-collapse:collapse;width:100%;margin-top:20px}td,th{border:1px solid #ddd;padding:8px;text-align:left;font-size:10pt}tr:nth-child(even){background-color:#f9f9f9}th{background-color:#f2f2f2;font-weight:bold}</style>
+                        `;
+                    } else if (ext === 'pptx') {
+                        const zip = await window.JSZip.loadAsync(fileData);
+                        let slidesHtml = '';
+                        let slideIndex = 1;
+                        while (true) {
+                            const slideFile = zip.file(`ppt/slides/slide${slideIndex}.xml`);
+                            if (!slideFile) break;
+                            const slideXmlStr = await slideFile.async("string");
+                            const parser = new DOMParser();
+                            const xmlDoc = parser.parseFromString(slideXmlStr, "text/xml");
+                            const textNodes = xmlDoc.getElementsByTagName("a:t");
+                            let slideText = "";
+                            for (let i = 0; i < textNodes.length; i++) slideText += `<p style="margin: 5px 0;">• ${textNodes[i].textContent}</p>`;
+                            if (slideText) {
+                                slidesHtml += `<div style="border: 1px solid #ccc; margin-bottom: 20px; padding: 40px; border-radius: 8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.1); page-break-inside: avoid;"><h3 style="color: #444; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 20px;">Slide ${slideIndex}</h3><div style="font-size: 14pt;">${slideText}</div></div>`;
+                            }
+                            slideIndex++;
+                        }
+                        if (!slidesHtml) throw new Error("無法讀取簡報內容");
+                        container.innerHTML = `<h1 style="text-align:center;">${file.name.replace('.pptx','')}</h1>${slidesHtml}`;
+                    } else {
+                        throw new Error("不支援的格式");
+                    }
+
+                    const images = container.querySelectorAll('img');
+                    images.forEach(img => { img.style.maxWidth = '100%'; img.style.height = 'auto'; });
+
+                    const opt = {
+                        margin:       10,
+                        filename:     files[0].name.replace(/\.(docx|xlsx|xls|pptx)$/i, '.pdf'),
+                        image:        { type: 'jpeg', quality: 0.98 },
+                        html2canvas:  { scale: 2 },
+                        jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+                    };
+
+                    await window.html2pdf().set(opt).from(container).save();
+                    showMessage('轉換成功！', 'success');
+
+                } catch (e) {
+                    console.error(e);
+                    showMessage(`轉換失敗：${e.message}`, 'error');
+                }
+                setProcessing(false);
+            };
+
+            // --- 壓縮 PDF ---
+            const compressPDF = async () => {
+                if (files.length === 0) return;
+                setProcessing(true);
+                try {
+                const fileData = await readFileAsArrayBuffer(files[0]);
+                const pdf = await window.pdfjsLib.getDocument(fileData).promise;
+                const { PDFDocument } = window.PDFLib;
+                const newPdf = await PDFDocument.create();
+
+                for (let i = 1; i <= pdf.numPages; i++) {
+                    const page = await pdf.getPage(i);
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    await page.render({ canvasContext: ctx, viewport }).promise;
+
+                    const imgDataUrl = canvas.toDataURL('image/jpeg', compressQuality);
+                    const imgBytes = await fetch(imgDataUrl).then(res => res.arrayBuffer());
+
+                    const embeddedImage = await newPdf.embedJpg(imgBytes);
+                    const newPage = newPdf.addPage([viewport.width, viewport.height]);
+
+                    newPage.drawImage(embeddedImage, {
+                    x: 0,
+                    y: 0,
+                    width: viewport.width,
+                    height: viewport.height,
+                    });
+                }
+
+                const pdfBytes = await newPdf.save();
+                downloadBlob(pdfBytes, `compressed_${files[0].name}`);
+                showMessage('壓縮完成並下載', 'success');
+                } catch (e) {
+                console.error(e);
+                showMessage('壓縮失敗，請確認檔案未加密', 'error');
+                }
+                setProcessing(false);
+            };
+
+            // --- 調整頁面順序 ---
+            const handleReorderDragStart = (e, index) => {
+                setDraggedIndex(index);
+                e.dataTransfer.effectAllowed = "move";
+            };
+
+            const handleReorderDragOver = (e, index) => {
+                e.preventDefault();
+                if (draggedIndex === null || draggedIndex === index) return;
+                const newList = [...reorderList];
+                const draggedItem = newList[draggedIndex];
+                newList.splice(draggedIndex, 1);
+                newList.splice(index, 0, draggedItem);
+                setDraggedIndex(index);
+                setReorderList(newList);
+            };
+
+            const handleReorderDragEnd = () => {
+                setDraggedIndex(null);
+            };
+
+            const applyReorder = async () => {
+                if (files.length === 0 || reorderList.length === 0) return;
+                setProcessing(true);
+                try {
+                    const { PDFDocument } = window.PDFLib;
+                    const fileData = await readFileAsArrayBuffer(files[0]);
+                    const originalPdf = await PDFDocument.load(fileData);
+                    const newPdf = await PDFDocument.create();
+
+                    const indicesToCopy = reorderList.map(item => item.id - 1);
+                    const copiedPages = await newPdf.copyPages(originalPdf, indicesToCopy);
+
+                    copiedPages.forEach(page => newPdf.addPage(page));
+
+                    const pdfBytes = await newPdf.save();
+                    downloadBlob(pdfBytes, `reordered_${files[0].name}`);
+                    showMessage('頁面順序已更新並下載', 'success');
+                } catch (e) {
+                    console.error(e);
+                    showMessage('重新排序失敗', 'error');
+                }
+                setProcessing(false);
+            };
+
+            // --- 其他功能 ---
+            const mergePDFs = async () => { if(files.length<2) return showMessage('需兩個檔案','error'); setProcessing(true); try{ const {PDFDocument}=window.PDFLib; const m=await PDFDocument.create(); for(const f of files){ const d=await readFileAsArrayBuffer(f); const p=await PDFDocument.load(d); (await m.copyPages(p,p.getPageIndices())).forEach(pg=>m.addPage(pg)); } downloadBlob(await m.save(),'merged.pdf'); showMessage('合併成功','success'); }catch(e){showMessage('失敗','error');} setProcessing(false); };
+            const extractPages = async () => { if(!files.length||!splitRange)return; setProcessing(true); try{ const {PDFDocument}=window.PDFLib; const d=await readFileAsArrayBuffer(files[0]); const p=await PDFDocument.load(d); const n=await PDFDocument.create(); const s=new Set(); splitRange.split(',').forEach(x=>{if(x.includes('-')){const[a,b]=x.split('-').map(Number);for(let i=a;i<=b;i++)s.add(i)}else s.add(Number(x))}); const idx=[...s].filter(x=>x>=1&&x<=p.getPageCount()).map(x=>x-1); if(!idx.length)throw 0; (await n.copyPages(p,idx)).forEach(pg=>n.addPage(pg)); downloadBlob(await n.save(),`extract.pdf`); showMessage('完成','success'); }catch(e){showMessage('失敗','error');} setProcessing(false); };
+            const addWatermark = async () => { if(files.length===0) return; setProcessing(true); try{ const {PDFDocument, degrees}=window.PDFLib; const fileData=await readFileAsArrayBuffer(files[0]); const pdfDoc=await PDFDocument.load(fileData); let embeddedImage; let imgDims; if(watermarkType==='text'){const canvas=document.createElement('canvas'); const ctx=canvas.getContext('2d'); const fontSize=80; ctx.font=`bold ${fontSize}px "Microsoft JhengHei", "Heiti TC", "Noto Sans TC", sans-serif`; const textMetrics=ctx.measureText(watermarkText); canvas.width=textMetrics.width+40; canvas.height=fontSize*1.5; ctx.font=`bold ${fontSize}px "Microsoft JhengHei", "Heiti TC", "Noto Sans TC", sans-serif`; ctx.fillStyle='rgba(128, 128, 128, 1.0)'; ctx.textBaseline='middle'; ctx.fillText(watermarkText, 20, canvas.height/2); const dataUrl=canvas.toDataURL('image/png'); const imgBuffer=await (await fetch(dataUrl)).arrayBuffer(); embeddedImage=await pdfDoc.embedPng(imgBuffer); imgDims=embeddedImage.scale(0.5); }else if(watermarkType==='image'&&watermarkImage){const imgBuffer=await readFileAsArrayBuffer(watermarkImage); if(watermarkImage.type.includes('png')){embeddedImage=await pdfDoc.embedPng(imgBuffer);}else{embeddedImage=await pdfDoc.embedJpg(imgBuffer);} imgDims=embeddedImage.scale(watermarkScale);} if(embeddedImage){const pages=pdfDoc.getPages(); pages.forEach(page=>{const {width, height}=page.getSize(); page.drawImage(embeddedImage,{x:width/2-imgDims.width/2, y:height/2-imgDims.height/2, width:imgDims.width, height:imgDims.height, opacity:watermarkOpacity, rotate:degrees(45)});}); const pdfBytes=await pdfDoc.save(); downloadBlob(pdfBytes, `watermarked_${files[0].name}`); showMessage('浮水印添加成功','success');}else{showMessage('請輸入文字或上傳圖片','info');} }catch(e){showMessage('浮水印失敗: '+e.message,'error');} setProcessing(false); };
+            const encryptPDF = async () => { if(!files.length||!confirmPassword)return; setProcessing(true); try{ const{PDFDocument}=window.PDFLib; const p=await PDFDocument.load(await readFileAsArrayBuffer(files[0])); downloadBlob(await p.save({userPassword:confirmPassword,ownerPassword:confirmPassword}),`enc.pdf`); showMessage('加密成功','success'); }catch(e){showMessage('失敗','error');} setProcessing(false); };
+            const decryptPDF = async () => { if(!files.length)return; setProcessing(true); try{ const{PDFDocument}=window.PDFLib; const d=await readFileAsArrayBuffer(files[0]); let p; try{p=await PDFDocument.load(d,{ignoreEncryption:true})}catch(e){if(!confirmPassword)return showMessage('需密碼','info'); p=await PDFDocument.load(d,{password:confirmPassword})} downloadBlob(await p.save(),`dec.pdf`); showMessage('已解鎖','success'); }catch(e){showMessage('密碼錯誤','error');} setProcessing(false); };
+            const renderPdfPreview = async (file, pageNum) => { try{const fileData=await readFileAsArrayBuffer(file); const pdf=await window.pdfjsLib.getDocument(fileData).promise; setTotalPreviewPages(pdf.numPages); const page=await pdf.getPage(pageNum); const viewport=page.getViewport({scale:1.0}); setPdfPageSize({width:viewport.width, height:viewport.height}); const canvas=previewCanvasRef.current; if(!canvas)return; const context=canvas.getContext('2d'); const containerWidth=Math.min(window.innerWidth-64,500); const scale=containerWidth/viewport.width; const scaledViewport=page.getViewport({scale}); canvas.width=scaledViewport.width; canvas.height=scaledViewport.height; setCanvasSize({width:scaledViewport.width, height:scaledViewport.height}); await page.render({canvasContext:context, viewport:scaledViewport}).promise;}catch(e){console.error(e);} };
+            const handleDragStart=(e)=>setIsDragging(true); const handleDrag=(e)=>{if(!isDragging)return; const canvas=previewCanvasRef.current; const rect=canvas.getBoundingClientRect(); const clientX=e.touches?e.touches[0].clientX:e.clientX; const clientY=e.touches?e.touches[0].clientY:e.clientY; setDragPos({x:Math.max(0,Math.min(clientX-rect.left,canvasSize.width)), y:Math.max(0,Math.min(clientY-rect.top,canvasSize.height))});}; const handleDragEnd=()=>setIsDragging(false);
+            const applySignature = async () => { if(files.length===0||!signaturePreview)return; setProcessing(true); try{ const {PDFDocument}=window.PDFLib; const pdfData=await readFileAsArrayBuffer(files[0]); const pdfDoc=await PDFDocument.load(pdfData); const signRes=await fetch(signaturePreview); const signBlob=await signRes.blob(); const signArrayBuffer=await signBlob.arrayBuffer(); let embeddedImage; if(signBlob.type==='image/png')embeddedImage=await pdfDoc.embedPng(signArrayBuffer); else embeddedImage=await pdfDoc.embedJpg(signArrayBuffer); const page=pdfDoc.getPages()[previewPageNum-1]; const ratioX=pdfPageSize.width/canvasSize.width; const ratioY=pdfPageSize.height/canvasSize.height; const imgWidth=embeddedImage.width*signScale; const imgHeight=embeddedImage.height*signScale; const pdfX=dragPos.x*ratioX; const pdfY=pdfPageSize.height-(dragPos.y*ratioY)-imgHeight; page.drawImage(embeddedImage,{x:pdfX, y:pdfY, width:imgWidth, height:imgHeight}); downloadBlob(await pdfDoc.save(),`signed_${files[0].name}`); showMessage('簽章成功','success'); }catch(e){showMessage('簽章失敗','error');} setProcessing(false); };
+
+            // UI Render
+            const renderActiveTool = () => {
+                const commonFileUploader = (mult=false, accept=".pdf", label) => (
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 relative bg-white mb-4 transition-colors">
+                    <input type="file" accept={accept} multiple={mult} onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                    <i className="fa-solid fa-upload block text-center text-4xl text-gray-400 mb-2"></i>
+                    <p className="mt-2 text-sm text-gray-600">
+                        {mult ? `點擊或拖曳多個 ${label || accept} 檔案` : `點擊或拖曳 ${label || accept} 檔案`}
+                    </p>
+                </div>
+                );
+                const actionBtn = (lbl, fn, dis) => (
+                <button onClick={fn} disabled={dis||processing} className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded flex items-center justify-center gap-2 disabled:opacity-50 transition-colors">
+                    {processing?<i className="fa-solid fa-spinner fa-spin text-[18px]"></i>:<i className="fa-solid fa-check text-[18px]"></i>} {processing?'處理中...':lbl}
+                </button>
+                );
+
+                switch (activeTool) {
+                case 'home':
+                    const tools = [
+                        { id: 'img', name: 'PDF 轉圖片', icon: <i className="fa-regular fa-image text-3xl"></i>, desc: '轉為 JPG/PNG' },
+                        { id: 'office', name: 'PDF 轉 Office', icon: <i className="fa-regular fa-file-lines text-3xl"></i>, desc: '支援一般轉檔與 OCR 圖片文字辨識' },
+                        { id: 'office2pdf', name: 'Office 轉 PDF', icon: <i className="fa-solid fa-file-pdf text-3xl"></i>, desc: '支援 Word, Excel, PPT' },
+                        { id: 'compress', name: '壓縮 PDF', icon: <i className="fa-solid fa-file-zipper text-3xl"></i>, desc: '降低檔案大小 (圖層化壓縮)' },
+                        { id: 'merge', name: '合併 PDF', icon: <i className="fa-solid fa-layer-group text-3xl"></i>, desc: '拖曳排序合併' },
+                        { id: 'split', name: '拆分 PDF', icon: <i className="fa-solid fa-scissors text-3xl"></i>, desc: '提取特定頁面' },
+                        { id: 'reorder', name: '調整頁面順序', icon: <i className="fa-solid fa-grip text-3xl"></i>, desc: '拖曳改變檔案頁面順序' },
+                        { id: 'watermark', name: '浮水印', icon: <i className="fa-solid fa-pen-nib text-3xl"></i>, desc: '支援文字(中文)與圖片' },
+                        { id: 'sign', name: 'PDF 簽署', icon: <i className="fa-solid fa-arrows-up-down-left-right text-3xl"></i>, desc: '視覺化拖曳簽名' },
+                        { id: 'encrypt', name: '加密', icon: <i className="fa-solid fa-shield-halved text-3xl"></i>, desc: '設定密碼' },
+                        { id: 'decrypt', name: '解密', icon: <i className="fa-solid fa-shield-virus text-3xl"></i>, desc: '移除密碼' },
+                    ];
+                    return (
+                        <div className="space-y-8">
+                            <div className="bg-blue-50 border border-blue-100 rounded-xl p-6 flex flex-col md:flex-row items-start md:items-center gap-4">
+                                <div className="bg-blue-100 p-3 rounded-full text-blue-600 shrink-0"><i className="fa-solid fa-shield-halved text-[24px]"></i></div>
+                                <div>
+                                    <h3 className="font-bold text-blue-900 mb-1">隱私優先設計：本地端處理</h3>
+                                    <p className="text-sm text-blue-800">所有檔案處理皆採用 <strong>Client-Side Computing (純前端技術)</strong>。檔案僅在您的瀏覽器內運算，未上傳至任何雲端伺服器，確保您的資料隱私。</p>
+                                </div>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {tools.map(t => (
+                                    <div key={t.id} onClick={() => {setActiveTool(t.id); resetWorkspace();}} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-xl hover:-translate-y-2 transition-all duration-300 cursor-pointer border border-gray-100 flex flex-col items-center text-center group">
+                                        <div className="p-3 bg-blue-50 text-blue-600 rounded-full mb-4 group-hover:scale-110 transition-transform duration-300">{t.icon}</div>
+                                        <h3 className="font-bold text-gray-800">{t.name}</h3>
+                                        <p className="text-gray-500 text-sm">{t.desc}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    );
+
+                case 'office':
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-regular fa-file-lines"></i> PDF 轉 Office</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && <p className="text-sm text-blue-600 mb-4">已選擇: {files[0].name}</p>}
+                        
+                        <div className="bg-gray-50 p-4 rounded border mb-4 space-y-3">
+                            <label className="block text-sm font-bold text-gray-700">選擇轉換模式：</label>
+                            <label className={`flex items-start gap-3 cursor-pointer p-3 rounded border transition-colors ${officeMode === 'ocr' ? 'bg-orange-50 border-orange-300 ring-1 ring-orange-200' : 'hover:bg-gray-50 border-transparent hover:border-gray-200'}`}>
+                                <input type="radio" name="mode" value="ocr" checked={officeMode === 'ocr'} onChange={() => setOfficeMode('ocr')} className="mt-1" />
+                                <div className="w-full">
+                                    <span className="flex items-center gap-1 text-sm font-bold text-orange-700 mb-1"><i className="fa-solid fa-expand text-[14px]"></i> OCR 文字疊加模式 (實驗性)</span>
+                                    <span className="text-xs text-gray-600 block">適用於 NotebookLM 或掃描檔。自動辨識文字並覆蓋於原圖上。</span>
+                                    
+                                    {officeMode === 'ocr' && (
+                                        <div className="mt-3 bg-white p-3 rounded border border-orange-200 text-xs text-orange-800 flex items-start gap-2">
+                                            <i className="fa-solid fa-triangle-exclamation text-[16px] shrink-0 mt-0.5"></i>
+                                            <div>
+                                                <p className="font-bold mb-1">技術限制公告：</p>
+                                                <p>受限於瀏覽器端運算技術，本功能無法完美還原複雜背景。使用模糊演算去除原始文字時，<strong>必將產生模糊色塊或視覺瑕疵</strong>。若您需要完美的圖文分離，建議尋求專業修圖軟體協助。</p>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {officeMode === 'ocr' && (
+                                        <div className="mt-2 flex items-center gap-2">
+                                            <label className="text-xs flex items-center gap-1 cursor-pointer select-none">
+                                                <input type="checkbox" checked={isHighQuality} onChange={e => setIsHighQuality(e.target.checked)} />
+                                                <span className={isHighQuality ? 'text-blue-600 font-bold' : 'text-gray-500'}>啟用高畫質 (處理較慢)</span>
+                                            </label>
+                                        </div>
+                                    )}
+                                </div>
+                            </label>
+                            <label className="flex items-start gap-3 cursor-pointer p-3 hover:bg-gray-50 rounded border border-transparent hover:border-gray-200">
+                                <input type="radio" name="mode" value="layout" checked={officeMode === 'layout'} onChange={() => setOfficeMode('layout')} className="mt-1" />
+                                <div><span className="text-sm font-bold block text-blue-700">一般排版模式 (文字型 PDF 推薦)</span><span className="text-xs text-gray-500">直接提取 PDF 內建文字，疊加於背景圖上。</span></div>
+                            </label>
+                            <label className="flex items-start gap-3 cursor-pointer p-3 hover:bg-gray-50 rounded border border-transparent hover:border-gray-200">
+                                <input type="radio" name="mode" value="image" checked={officeMode === 'image'} onChange={() => setOfficeMode('image')} className="mt-1" />
+                                <div><span className="text-sm font-bold block">純圖片模式</span><span className="text-xs text-gray-500">整頁轉為高畫質圖片，版面最精確但不可編輯。</span></div>
+                            </label>
+                            <label className="flex items-start gap-3 cursor-pointer p-3 hover:bg-gray-50 rounded border border-transparent hover:border-gray-200">
+                                <input type="radio" name="mode" value="text" checked={officeMode === 'text'} onChange={() => setOfficeMode('text')} className="mt-1" />
+                                <div><span className="text-sm font-bold block">純文字模式</span><span className="text-xs text-gray-500">僅提取純文字內容，適合只需要文字資料時使用。</span></div>
+                            </label>
+                        </div>
+                        {officeMode === 'ocr' && processing && ocrProgress > 0 && (
+                            <div className="w-full bg-gray-200 rounded-full h-2.5 mb-4">
+                                <div className="bg-blue-600 h-2.5 rounded-full" style={{width: `${ocrProgress}%`}}></div>
+                                <p className="text-xs text-center mt-1 text-gray-500">處理進度: {ocrProgress}%</p>
+                            </div>
+                        )}
+                        <div className="grid grid-cols-1 gap-4">
+                        {actionBtn('匯出為 HTML 格式 (支援 Word/Excel/PPT 開啟)', convertToOffice, !files.length)}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-3 text-center bg-gray-50 p-2 rounded border border-gray-200">
+                            * 下載完成後，對著 <b>.html</b> 檔案點擊右鍵 ➔「開啟檔案」➔ 選擇 <b>Word</b> 或 <b>Excel</b> 即可維持精準排版進行編輯。
+                        </p>
+                    </div>
+                    );
+
+                case 'office2pdf': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-file-pdf"></i> Office 轉 PDF</h2>
+                        {commonFileUploader(false, ".docx,.xlsx,.xls,.pptx", "Word, Excel, PPT")}
+                        {files.length > 0 ? (
+                            <p className="text-sm text-blue-600 mb-4 font-bold bg-blue-50 p-2 rounded border border-blue-200">
+                                已選擇: {files[0].name} ({files[0].name.split('.').pop().toUpperCase()})
+                            </p>
+                        ) : (
+                            <div className="grid grid-cols-3 gap-2 mb-4 text-center text-xs text-gray-500">
+                                <div className="bg-gray-50 p-2 rounded"><i className="fa-regular fa-file-lines text-[20px] block text-center mb-1 text-blue-500"></i>Word (.docx)</div>
+                                <div className="bg-gray-50 p-2 rounded"><i className="fa-solid fa-table text-[20px] block text-center mb-1 text-green-500"></i>Excel (.xlsx)</div>
+                                <div className="bg-gray-50 p-2 rounded"><i className="fa-solid fa-person-chalkboard text-[20px] block text-center mb-1 text-orange-500"></i>PPT (.pptx)</div>
+                            </div>
+                        )}
+                        <div className="bg-yellow-50 border border-yellow-100 p-4 rounded text-sm text-yellow-800 mb-4 flex gap-2">
+                            <i className="fa-solid fa-circle-info text-[20px] shrink-0"></i>
+                            <p>純前端轉換說明：Word 與 Excel 可保留大部分格式；PPT 轉換將以「投影片講義」風格輸出（提取文字與標題），複雜動畫無法保留。</p>
+                        </div>
+                        {actionBtn('轉換為 PDF', convertOfficeToPdf, !files.length)}
+                    </div>
+                    );
+
+                case 'compress':
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-file-zipper"></i> 壓縮 PDF</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && <p className="text-sm text-blue-600 mb-4">已選擇: {files[0].name}</p>}
+                        <div className="bg-yellow-50 border border-yellow-100 p-4 rounded text-sm text-yellow-800 mb-4 flex gap-2">
+                            <i className="fa-solid fa-circle-info text-[20px] shrink-0"></i>
+                            <p>純前端壓縮說明：將會把 PDF 內容轉為 JPEG 圖層來減少檔案體積。<strong>注意：壓縮後的 PDF 文字將無法被反白與複製。</strong></p>
+                        </div>
+                        <div className="bg-white p-4 rounded border mb-4">
+                        <label className="block text-sm font-bold text-gray-700 mb-2">畫質保留程度 ({Math.round(compressQuality * 100)}%)</label>
+                        <p className="text-xs text-gray-500 mb-3">數值越小檔案越小，但畫面會越模糊。</p>
+                        <input type="range" min="0.1" max="1.0" step="0.1" value={compressQuality} onChange={(e) => setCompressQuality(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
+                        </div>
+                        {actionBtn('開始壓縮並下載', compressPDF, !files.length)}
+                    </div>
+                    );
+
+                case 'reorder': 
+                    return (
+                    <div className="max-w-4xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-grip"></i> 調整頁面順序</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && (
+                            <div className="bg-gray-50 rounded border p-4">
+                                <div className="flex justify-between items-center mb-4 border-b pb-2">
+                                    <h3 className="font-bold text-gray-700">預覽與拖曳調整 (共 {reorderList.length} 頁)</h3>
+                                </div>
+                                {generatingPreviews ? (
+                                    <div className="flex flex-col items-center justify-center h-48 text-gray-500">
+                                        <i className="fa-solid fa-spinner fa-spin text-[32px] mb-2"></i>
+                                        <p>正在生成預覽圖，請稍候...</p>
+                                    </div>
+                                ) : (
+                                    <div className="grid grid-cols-3 md:grid-cols-5 gap-4">
+                                        {reorderList.map((item, index) => (
+                                            <div 
+                                                key={item.id} 
+                                                draggable
+                                                onDragStart={(e) => handleReorderDragStart(e, index)}
+                                                onDragOver={(e) => handleReorderDragOver(e, index)}
+                                                onDragEnd={handleReorderDragEnd}
+                                                className={`relative cursor-grab rounded overflow-hidden border-2 transition-transform bg-white ${draggedIndex === index ? 'opacity-50 scale-95' : 'border-gray-200 hover:border-blue-400'}`}
+                                            >
+                                                <img src={item.image} alt={`Page ${item.id}`} className="w-full h-auto block pointer-events-none" />
+                                                <div className="absolute top-1 left-1 bg-black bg-opacity-70 text-white rounded px-1.5 py-0.5 text-[10px] pointer-events-none">新: {index + 1}</div>
+                                                <div className="absolute bottom-0 left-0 right-0 bg-gray-900 bg-opacity-60 text-gray-200 text-center text-[10px] py-1 pointer-events-none">原頁碼: {item.id}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div className="mt-6">
+                                {actionBtn('下載更新順序後的 PDF', applyReorder, !files.length || generatingPreviews)}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    );
+
+                case 'split': 
+                    return (
+                    <div className="max-w-4xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-scissors"></i> 拆分/擷取 PDF</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && (
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-4">
+                                <div className="lg:col-span-2 bg-gray-50 rounded border p-4 h-[450px] overflow-y-auto">
+                                    <div className="sticky top-0 bg-gray-50 pb-2 mb-3 z-10 border-b flex justify-between items-center">
+                                        <h3 className="font-bold text-gray-700">預覽與點選 (共 {pagePreviews.length} 頁)</h3>
+                                        <button 
+                                            onClick={() => {
+                                                if (selectedPages.size === pagePreviews.length) {
+                                                    setSelectedPages(new Set());
+                                                    setSplitRange('');
+                                                } else {
+                                                    const all = new Set(pagePreviews.map((_, i) => i + 1));
+                                                    setSelectedPages(all);
+                                                    setSplitRange(Array.from(all).join(','));
+                                                }
+                                            }}
+                                            className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200"
+                                            disabled={generatingPreviews}
+                                        >
+                                            {selectedPages.size === pagePreviews.length && pagePreviews.length > 0 ? '全部取消' : '全選'}
+                                        </button>
+                                    </div>
+                                    {generatingPreviews ? (
+                                        <div className="flex flex-col items-center justify-center h-48 text-gray-500">
+                                            <i className="fa-solid fa-spinner fa-spin text-[32px] mb-2"></i>
+                                            <p>正在生成預覽圖，請稍候...</p>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-3 md:grid-cols-4 gap-4">
+                                            {pagePreviews.map((preview, index) => {
+                                                const pageNum = index + 1;
+                                                const isSelected = selectedPages.has(pageNum);
+                                                return (
+                                                    <div 
+                                                        key={index} 
+                                                        onClick={() => togglePageSelection(pageNum)}
+                                                        className={`relative cursor-pointer rounded overflow-hidden border-2 transition-all ${isSelected ? 'border-blue-500 shadow-md ring-2 ring-blue-200' : 'border-gray-200 hover:border-gray-300'}`}
+                                                    >
+                                                        <img src={preview} alt={`Page ${pageNum}`} className="w-full h-auto block bg-white" />
+                                                        <div className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-60 text-white text-center text-xs py-1">頁碼: {pageNum}</div>
+                                                        {isSelected && (<div className="absolute top-1 right-1 bg-blue-500 text-white rounded-full p-0.5"><i className="fa-solid fa-check text-[14px]"></i></div>)}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="lg:col-span-1 bg-white p-4 rounded border h-fit">
+                                <div className="bg-blue-50 text-blue-800 text-sm p-2 rounded mb-4 truncate font-bold" title={files[0].name}>📄 {files[0].name}</div>
+                                <label className="block text-sm font-bold text-gray-700 mb-2">已選擇的頁碼</label>
+                                <p className="text-xs text-gray-500 mb-2">可透過左方預覽點選，或在此直接輸入 (例如: 1-3, 5)</p>
+                                <input placeholder="例如: 1-3, 5" value={splitRange} onChange={handleSplitRangeChange} className="w-full border rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none mb-4"/>
+                                <div className="text-sm text-blue-600 mb-4 font-bold border-l-4 border-blue-500 pl-2">共選取 {selectedPages.size} 頁</div>
+                                {actionBtn('拆分並下載', extractPages, !files.length || !splitRange)}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    );
+
+                case 'sign': 
+                    return (
+                    <div className="max-w-4xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-arrows-up-down-left-right"></i> PDF 簽署</h2>
+                        {!files.length ? commonFileUploader(false, ".pdf") : (
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-1 space-y-4">
+                            <div className="bg-blue-50 p-2 text-sm text-blue-800 rounded truncate">{files[0].name}</div>
+                            <div>
+                                <label className="block text-sm font-bold mb-2">上傳簽名檔</label>
+                                <input type="file" accept="image/*" onChange={(e)=>{if(e.target.files[0]) readFileAsDataURL(e.target.files[0]).then(setSignaturePreview)}} className="block w-full text-sm"/>
+                            </div>
+                            {signaturePreview && (
+                                <div>
+                                <label className="text-sm font-bold">大小縮放</label>
+                                <input type="range" min="0.1" max="1" step="0.05" value={signScale} onChange={e=>setSignScale(parseFloat(e.target.value))} className="w-full"/>
+                                </div>
+                            )}
+                            <div>
+                                <label className="text-sm font-bold">頁面: {previewPageNum}</label>
+                                <div className="flex gap-2">
+                                <button onClick={()=>renderPdfPreview(files[0],Math.max(1,previewPageNum-1))||setPreviewPageNum(Math.max(1,previewPageNum-1))} className="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">上</button>
+                                <button onClick={()=>renderPdfPreview(files[0],Math.min(totalPreviewPages,previewPageNum+1))||setPreviewPageNum(Math.min(totalPreviewPages,previewPageNum+1))} className="bg-gray-200 px-3 py-1 rounded hover:bg-gray-300">下</button>
+                                </div>
+                            </div>
+                            {actionBtn('合成簽名', applySignature, !signaturePreview)}
+                            <button onClick={resetWorkspace} className="w-full text-xs text-gray-500 underline mt-2 hover:text-gray-700">重置</button>
+                            </div>
+                            <div className="lg:col-span-2 bg-gray-200 rounded p-4 flex justify-center overflow-auto relative min-h-[500px]" onMouseMove={handleDrag} onMouseUp={handleDragEnd} onTouchMove={handleDrag} onTouchEnd={handleDragEnd}>
+                            <div className="relative shadow-xl" style={{width:canvasSize.width,height:canvasSize.height}}>
+                                <canvas ref={previewCanvasRef} className="bg-white"/>
+                                {signaturePreview && (
+                                <div onMouseDown={handleDragStart} onTouchStart={handleDragStart} style={{position:'absolute',left:dragPos.x,top:dragPos.y,transform:`scale(${signScale})`,transformOrigin:'top left',cursor:'move',border:'1px dashed blue'}}>
+                                    <img src={signaturePreview} className="pointer-events-none select-none max-w-[200px]"/>
+                                </div>
+                                )}
+                            </div>
+                            </div>
+                        </div>
+                        )}
+                    </div>
+                    );
+
+                case 'watermark': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-solid fa-pen-nib"></i> 加入浮水印</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && <p className="text-sm text-blue-600 mb-4">已選擇: {files[0].name}</p>}
+                        <div className="bg-white p-4 rounded border mb-4">
+                        <div className="flex gap-4 border-b pb-2 mb-4">
+                            <button onClick={()=>setWatermarkType('text')} className={`pb-2 px-4 font-bold ${watermarkType==='text'?'border-b-2 border-blue-500 text-blue-600':'text-gray-500 hover:text-gray-700'}`}>文字浮水印</button>
+                            <button onClick={()=>setWatermarkType('image')} className={`pb-2 px-4 font-bold ${watermarkType==='image'?'border-b-2 border-blue-500 text-blue-600':'text-gray-500 hover:text-gray-700'}`}>圖片浮水印 (LOGO)</button>
+                        </div>
+                        {watermarkType==='text' ? (
+                            <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">文字內容</label>
+                                <input type="text" value={watermarkText} onChange={(e) => setWatermarkText(e.target.value)} className="w-full border rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none"/>
+                            </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">上傳圖片 (PNG/JPG)</label>
+                                <input type="file" accept="image/*" onChange={(e) => {if (e.target.files && e.target.files[0]) {setWatermarkImage(e.target.files[0]);}}} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
+                            </div>
+                            {watermarkImage && (
+                                <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">圖片大小縮放 ({Math.round(watermarkScale * 100)}%)</label>
+                                <input type="range" min="0.1" max="2.0" step="0.1" value={watermarkScale} onChange={(e) => setWatermarkScale(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/>
+                                </div>
+                            )}
+                            </div>
+                        )}
+                        <div className="mt-4 pt-4 border-t">
+                            <label className="block text-sm font-bold text-gray-700 mb-1">透明度 ({Math.round(watermarkOpacity * 100)}%)</label>
+                            <input type="range" min="0.1" max="1.0" step="0.1" value={watermarkOpacity} onChange={(e) => setWatermarkOpacity(parseFloat(e.target.value))} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"/>
+                        </div>
+                        </div>
+                        {actionBtn('加入浮水印', addWatermark, files.length === 0)}
+                    </div>
+                    );
+
+                case 'merge': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-4">合併 PDF</h2>
+                        {commonFileUploader(true, ".pdf")}
+                        {files.length > 0 && files.map((f,i)=><div key={i} className="flex justify-between bg-gray-50 p-2 mb-1 rounded text-sm"><span>{i+1}. {f.name}</span> <button onClick={()=>{const n=[...files];n.splice(i,1);setFiles(n)}} className="text-red-500"><i className="fa-solid fa-trash-can text-[14px]"></i></button></div>)} 
+                        {actionBtn('合併', mergePDFs, files.length<2)}
+                    </div>
+                    );
+
+                case 'encrypt': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-4">加密</h2>
+                        {commonFileUploader(false, ".pdf")} 
+                        <input type="password" placeholder="密碼" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} className="border p-2 w-full rounded mt-2"/> 
+                        {actionBtn('加密', encryptPDF, !files.length||!confirmPassword)}
+                    </div>
+                    );
+
+                case 'decrypt': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-4">解密</h2>
+                        {commonFileUploader(false, ".pdf")} 
+                        <input type="password" placeholder="密碼 (若有)" value={confirmPassword} onChange={e=>setConfirmPassword(e.target.value)} className="border p-2 w-full rounded mt-2"/> 
+                        {actionBtn('解鎖', decryptPDF, !files.length)}
+                    </div>
+                    );
+
+                case 'img': 
+                    return (
+                    <div className="max-w-xl mx-auto">
+                        <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><i className="fa-regular fa-image"></i> PDF 轉圖片</h2>
+                        {commonFileUploader(false, ".pdf")}
+                        {files.length > 0 && <p className="text-sm text-blue-600 mb-4">已選擇: {files[0].name}</p>}
+                        <div className="grid grid-cols-2 gap-4 mt-4">
+                        {actionBtn('轉成 JPG', () => convertToImage('jpg'), !files.length)}
+                        {actionBtn('轉成 PNG', () => convertToImage('png'), !files.length)}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2 text-center">* 單頁自動下載圖檔，多頁自動打包為 ZIP</p>
+                    </div>
+                    );
+
+                default: return (<div className="max-w-xl mx-auto">PDF 轉圖片 (見主選單)</div>); 
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-100 font-sans text-gray-900 flex flex-col">
+                {/* 檔案覆蓋確認 Modal */}
+                {pendingUpload && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] px-4">
+                        <div className="bg-white rounded-xl p-6 max-w-md w-full shadow-2xl">
+                            <div className="flex items-center gap-3 text-orange-600 mb-4">
+                                <i className="fa-solid fa-triangle-exclamation text-[28px]"></i>
+                                <h3 className="text-xl font-bold">確定要更換檔案嗎？</h3>
+                            </div>
+                            <p className="text-gray-600 mb-6 leading-relaxed">
+                                您已上傳了一個檔案。更換新的檔案將會<strong className="text-red-500">覆蓋目前的作業</strong>。<br/><br/>
+                                請確認您已經點擊下載並妥善儲存了先前的檔案。
+                            </p>
+                            <div className="flex gap-4 justify-end">
+                                <button onClick={cancelNewUpload} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded font-bold transition-colors">
+                                    取消，保留原檔案
+                                </button>
+                                <button onClick={confirmNewUpload} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded font-bold transition-colors">
+                                    確認更換
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                <header className="bg-slate-800 text-white p-4 shadow-lg sticky top-0 z-50">
+                    <div className="container mx-auto flex justify-between items-center">
+                    <div className="flex items-center gap-3 cursor-pointer" onClick={() => { setActiveTool('home'); resetWorkspace(); }}>
+                        <div className="bg-blue-500 p-2 rounded-lg"><i className="fa-solid fa-shield-halved text-[24px]"></i></div>
+                        <div><h1 className="text-xl font-bold">SecurePDF Pro</h1><p className="text-xs text-slate-400">Client-Side Only</p></div>
+                    </div>
+                    {activeTool !== 'home' && <button onClick={() => { setActiveTool('home'); resetWorkspace(); }} className="text-sm bg-slate-700 px-3 py-1 rounded flex gap-1 hover:bg-slate-600 transition-colors"><i className="fa-solid fa-house text-[14px]"></i> 回上一頁</button>}
+                    </div>
+                </header>
+                <main className="container mx-auto p-6 flex-grow">
+                    {message && <div className={`mb-6 p-4 rounded text-center font-bold ${message.type==='error'?'bg-red-100 text-red-700':'bg-green-100 text-green-700'}`}>{message.text}</div>}
+                    <div className="bg-white rounded-2xl shadow-xl p-8 min-h-[500px]">{renderActiveTool()}</div>
+                </main>
+                <footer className="bg-slate-800 text-slate-400 py-8 text-center text-sm mt-auto">
+                    <div className="container mx-auto px-4">
+                        <p className="font-bold text-white mb-2">隱私與安全聲明</p>
+                        <p className="mb-2">您的檔案<span className="text-blue-400 font-bold">不會</span>上傳至任何伺服器。所有運算皆透過您的瀏覽器（Client-Side）在本地完成，確保絕對的資料隱私。</p>
+                        <p className="text-xs text-slate-500 max-w-2xl mx-auto mt-4 border-t border-slate-700 pt-4">
+                            免責聲明：本工具僅供輔助使用，開發團隊不對轉換結果的精確性、完整性或因使用本工具而產生的任何直接或間接損害（包括但不限於資料遺失、業務中斷）承擔責任。
+                            使用者應自行承擔使用風險，並建議在使用前備份重要檔案。
+                        </p>
+                        <p className="mt-4 text-xs opacity-50">© 2026 Chris · Developed with AI. All rights reserved.</p>
+                    </div>
+                </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
